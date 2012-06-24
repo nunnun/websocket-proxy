@@ -1,14 +1,32 @@
-var http = require('http'), WebSocketClient = require('websocket').client, uuid = require('node-uuid');
+var http = require('http'), WebSocketClient = require('websocket').client, uuid = require('node-uuid'),opts = require('opts');
 var wslib = require('../../libs/websocket-proxy-lib');
 
+opts.parse([{
+	'short':'h',
+	'long':'host',
+	'value': true,
+	'description':'WebSocket Proxy Server Host',
+	'required':false
+},{
+	'short':'p',
+	'long':'port',
+	'value': true,
+	'description':'WebSocket Proxy Server Port',
+	'required':false	
+}],true);
+
 var listen_ports = [ 8000, 8001, 8002, 8003, 8004, 8005, 8006, 8007 ];
-var proxy_server = "127.0.0.1";
+var proxy_server = {
+		host:(opts.get('h') || '127.0.0.1'),
+		port:opts.get('p') || '8080',
+};
 
 var responseArray = {};
 
 var client = new WebSocketClient();
 client.on('connectFailed', function(error) {
 	console.log('Connect Error: ' + error.toString());
+	setTimeout(connectToProxy,5000);
 });
 
 var ws_connection;
@@ -51,7 +69,7 @@ client.on('connect', function(connection) {
 });
 
 function connectToProxy(){
-	client.connect('ws://' + proxy_server + ':8080/', 'proxy');
+	client.connect('ws://' + proxy_server.host + ':'+proxy_server.port+'/', 'proxy');
 }
 
 connectToProxy();
@@ -61,7 +79,7 @@ function startProxy() {
 		// WebSocketの接続を待つ
 		setTimeout(startProxy, 100);
 	} else {
-		console.log("Connection to " + proxy_server);
+		console.log("Connection to " + proxy_server.host + ":"+proxy_server.port);
 		for ( var i in listen_ports) {
 			http.createServer(function(request, response) {
 				sendRequest(request, response, listen_ports[i]);
@@ -88,6 +106,7 @@ function sendRequest(request, response, port) {
 					data:''
 				};
 			ws_connection.sendUTF(JSON.stringify(wsRequest, true));
+			console.log('Port:'+port+", URL:"+request.url);
 			// Send a payload only if the request method is POST
 			if(request.method === 'POST'){
 				request.on('data', function(chunk) {
