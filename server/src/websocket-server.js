@@ -1,8 +1,9 @@
 var WebSocketServer = require('websocket').server;
 var http = require('http');
 var url = require('url');
+var wslib = require('../../libs/websocket-proxy-lib');
 
-var maxConnectionsPerHost = 6;
+var maxConnectionsPerHost = 8;
 
 var server = http.createServer(function(request, response) {
 	console.log((new Date()) + ' Received request for ' + request.url + '\n'
@@ -43,7 +44,7 @@ wsServer.on('request', function(request) {
 		return;
 	}
 
-	var connection = request.accept('echo-test', request.origin);
+	var connection = request.accept('proxy', request.origin);
 	handleConnection(connection);
 
 });
@@ -56,19 +57,10 @@ server.listen(8080, function() {
 	console.log((new Date()) + ' Server is listening on port 8080');
 });
 
-function buildWsChunk(uuid, chunk, end) {
-	var offset = 36;
-	var buf = new Buffer(chunk.length + offset);
-	buf.write(uuid, 0, encoding = 'utf-8');
-	for ( var i = 0; i < chunk.length; i++) {
-		buf[offset + i] = chunk[i];
-	}
-	return buf;
-}
-
 function handleConnection(connection) {
 	var hostSockets = {};
 	var _pendingRequests = {};
+	var clientRequests = {};
 
 	function process_pending(hostname) {
 		if (_pendingRequests[hostname].length > 0) {
@@ -100,6 +92,72 @@ function handleConnection(connection) {
 		}
 	}
 	
+	function parseUri(uri) {
+		var targetUri = url.parse(uri, false);
+		if (!targetUri.pathname) {
+			targetUri.pathname = '/';
+		}
+		if (!targetUri.search) {
+			targetUri.search = '';
+		}
+		if (!targetUri.port) {
+			targetUri.port = 80;
+		}
+		targetUri.reqPath = targetUri.pathname + targetUri.search;
+		return targetUri;
+	};
+	
+	function proxyConnection(wsRequest, connection, done) {
+
+		var targetUrl = parseUri(wsRequest.url);
+
+		var client = http.createClient(targetUrl.port,
+				targetUrl.hostname);
+		client.on('error', function(err) {
+			console.log("http-client-error:");
+			console.log(err);
+		});
+		var httpRequest = client.request(wsRequest.method,
+				targetUrl.reqPath, wsRequest.headers);
+		httpRequest.on('error', function(err) {
+			console.log("httperror:");
+			console.log(err);
+		});
+		httpRequest.on('response', function(response) {
+			// Headerのみ先に返す
+			var wsResponse = {
+				id : wsRequest.id,
+				statusCode : response.statusCode,
+				headers : response.headers,
+				end : false
+			};
+			connection.sendUTF(JSON.stringify(wsResponse, true));
+
+			response.on('data',
+					function(chunk) {
+						connection.sendBytes(wslib.loadWsChunk(wsRequest.id,
+								chunk));
+					});
+			response.on('end', function() {
+				var wsResponse = {
+					id : wsRequest.id,
+					end : true,
+				};
+				connection.sendUTF(JSON.stringify(wsResponse, true));
+			});
+		});
+
+		if (wsRequest.data != "") {
+			httpRequest.write(wsRequest.data);
+		}
+		httpRequest.end();
+		if (wsRequest.method === 'POST'){
+			setTimeout(function() {
+				delete clientRequests[wsRequest.id];
+			}, 10);
+		}
+		done();
+	};
 
 	console.log((new Date()) + ' Connection accepted.');
 
@@ -109,91 +167,36 @@ function handleConnection(connection) {
 
 	connection.on('message', function(message) {
 		if (message.type === 'utf8') {
-			connection.sendUTF(message.utf8Data);
-		} else if (message.type === 'binary') {
-			var wsRequest = JSON.parse(message.binaryData.toString());
-
-			// ヘッダー調整
-			var requestHeader = wsRequest.headers;
-			if ('proxy-connection' in requestHeader) {
-				// myHeaders['Connection'] = myHeaders['proxy-connection'];
-				requestHeader['Connection'] = 'close';
-				delete requestHeader['proxy-connection'];
-			}
-			if ('cache-control' in requestHeader) {
-				delete requestHeader['cache-control'];
-			}
-
-			// URLパース
-
-			var parseUri = function(uri) {
-				var targetUri = url.parse(uri, false);
-				if (!targetUri.pathname) {
-					targetUri.pathname = '/';
+			var wsRequest = JSON.parse(message.utf8Data);
+			if (wsRequest.end === true) {
+				var req = clientRequests[wsRequest.id];
+				client_limit(req.hostname, proxyConnection, req.wsRequest,
+						connection);
+			} else {
+				// ヘッダー調整
+				if ('proxy-connection' in wsRequest.headers) {
+					//wsRequest.headers['Connection'] = wsRequest.headers['proxy-connection'];
+					wsRequest.headers['Connection'] = 'close';
+					delete wsRequest.headers['proxy-connection'];
 				}
-				if (!targetUri.search) {
-					targetUri.search = '';
+				if ('cache-control' in wsRequest.headers) {
+					delete wsRequest.headers['cache-control'];
 				}
-				if (!targetUri.port) {
-					targetUri.port = 80;
-				}
-				targetUri.reqPath = targetUri.pathname + targetUri.search;
-				return targetUri;
-			};
-
-			var proxyConnection = function(wsRequest, connection, done) {
-
-				var targetUrl = parseUri(wsRequest.url);
-
-				var client = http.createClient(targetUrl.port,
-						targetUrl.hostname);
-				client.on('error', function(err) {
-					console.log("http-client-error:");
-					console.log(err);
-				});
-				var httpRequest = client.request(wsRequest.method,
-						targetUrl.reqPath, requestHeader);
-				httpRequest.on('error', function(err) {
-					console.log("httperror:");
-					console.log(err);
-				});
-				httpRequest.on('response', function(response) {
-					// Headerのみ先に返す
-					var wsResponse = {
-						id : wsRequest.id,
-						statusCode : response.statusCode,
-						headers : response.headers,
-						end : false
+				var targetUri = parseUri(wsRequest.url);
+				if (wsRequest.method != 'POST') {
+					client_limit(targetUri.hostname, proxyConnection,
+							wsRequest, connection);
+				} else {
+					clientRequests[wsRequest.id] = {
+						hostname : targetUri.hostname,
+						wsRequest : wsRequest
 					};
-					connection.sendUTF(JSON.stringify(wsResponse, true));
-
-					response.on('data',
-							function(chunk) {
-								connection.sendBytes(buildWsChunk(wsRequest.id,
-										chunk));
-							});
-					response.on('end', function() {
-						var wsResponse = {
-							id : wsRequest.id,
-							end : true,
-						};
-						connection.sendUTF(JSON.stringify(wsResponse, true));
-					});
-				});
-
-				if (wsRequest.data != "") {
-					httpRequest.write(wsRequest.data);
 				}
-				httpRequest.end();
-				done();
-			};
-
-			var targetUri = parseUri(wsRequest.url);
-
-			// Limit connection to WebServers
-			client_limit(targetUri.hostname, proxyConnection, wsRequest,
-					connection);
-
+			}
+			
+		} else if (message.type === 'binary') {
+			var chunk = wslib.unloadWsChunk(message.binaryData);
+			clientRequests[chunk.id].wsRequest.data += chunk.payload;
 		}
 	});
 
@@ -202,3 +205,5 @@ function handleConnection(connection) {
 				+ ' disconnected.');
 	});
 }
+
+

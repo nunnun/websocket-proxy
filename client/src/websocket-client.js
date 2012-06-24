@@ -1,9 +1,12 @@
-var http = require('http'), zlib = require('zlib'), WebSocketClient = require('websocket').client,uuid = require('node-uuid');
+var http = require('http'), WebSocketClient = require('websocket').client, uuid = require('node-uuid');
+var wslib = require('../../libs/websocket-proxy-lib');
 
-var client = new WebSocketClient();
+var listen_ports = [ 8000, 8001, 8002, 8003, 8004, 8005, 8006, 8007 ];
+var proxy_server = "127.0.0.1";
 
 var responseArray = {};
 
+var client = new WebSocketClient();
 client.on('connectFailed', function(error) {
 	console.log('Connect Error: ' + error.toString());
 });
@@ -18,80 +21,86 @@ client.on('connect', function(connection) {
 	});
 	ws_connection.on('close', function() {
 		console.log('echo-protocol Connection Closed');
-		client.connect('ws://localhost:8080/', 'echo-test');
+		var reconnect = function(){
+			if (ws_connection.state == 'closed') {
+				connectToProxy();
+				setTimeout(reconnect, 1500);
+			}
+		};
+		reconnect();
 	});
 	ws_connection.on('message', function(message) {
 		if (message.type === 'utf8') {
 			var wsResponse = JSON.parse(message.utf8Data);
 			var httpResponse = responseArray[wsResponse.id];
-			if(wsResponse.end == false){
-				httpResponse.writeHead(wsResponse.statusCode, wsResponse.headers);
-			}else{
+			if (wsResponse.end == false) {
+				httpResponse.writeHead(wsResponse.statusCode,
+						wsResponse.headers);
+			} else {
 				httpResponse.end();
-				setTimeout(function(){
+				setTimeout(function() {
 					delete responseArray[wsResponse.id];
-				},10);
+				}, 10);
 			}
-		}else if (message.type === 'binary') {
-	        var offset = 36;
-	        var id = message.binaryData.toString('utf-8',start=0,end=offset);
-	        var res = responseArray[id];
-	        res.write(message.binaryData.slice(offset));
+		} else if (message.type === 'binary') {
+			var chunk = wslib.unloadWsChunk(message.binaryData);
+			var res = responseArray[chunk.id];
+			res.write(chunk.payload);
 		}
 	});
 });
 
-client.connect('ws://localhost:8080/', 'echo-test');
+function connectToProxy(){
+	client.connect('ws://' + proxy_server + ':8080/', 'proxy');
+}
+
+connectToProxy();
 
 function startProxy() {
 	if (ws_connection == undefined) {
-		//WebSocketの接続を待つ
+		// WebSocketの接続を待つ
 		setTimeout(startProxy, 100);
-	}else{
-	console.log("Proxy Server started");
-	http.createServer(function(request, response) {
-		sendRequest(request, response);
-//		console.log('8000');
-		}).listen(8000);
-	http.createServer(function(request, response) {
-		sendRequest(request, response);
-//		console.log('8001');
-		}).listen(8001);
-	http.createServer(function(request, response) {
-		sendRequest(request, response);
-//		console.log('8002');
-		}).listen(8002);
-	http.createServer(function(request, response) {
-		sendRequest(request, response);
-//		console.log('8003');
-		}).listen(8003);
-	http.createServer(function(request, response) {
-		sendRequest(request, response);
-//		console.log('8004');
-		}).listen(8004);
+	} else {
+		console.log("Connection to " + proxy_server);
+		for ( var i in listen_ports) {
+			http.createServer(function(request, response) {
+				sendRequest(request, response, listen_ports[i]);
+			}).listen(listen_ports[i]);
+		}
+		console.log('Proxy started listening on following ports:'
+				+ listen_ports.join());
 	}
 }
+
 startProxy();
 
-function sendRequest(request,response) {
+function sendRequest(request, response, port) {
 	if (ws_connection != undefined) {
 		if (ws_connection.connected) {
 			var id = uuid.v4();
 			responseArray[id] = response;
-			var data = '';
-			request.on('data',function(chunk){
-				data += chunk;
-			});
-			request.on('end',function(){
-				var wsRequest = {
-						id: id,
-						method:request.method,
-						url:request.url,
-						headers:request.headers,
-						data:data,
-						};
-				ws_connection.sendBytes(new Buffer(JSON.stringify(wsRequest, true),'utf-8'));
-			});
+			var wsRequest = {
+					id : id,
+					method : request.method,
+					url : request.url,
+					headers : request.headers,
+					end:false,
+					data:''
+				};
+			ws_connection.sendUTF(JSON.stringify(wsRequest, true));
+			// Send a payload only if the request method is POST
+			if(request.method === 'POST'){
+				request.on('data', function(chunk) {
+					ws_connection.sendBytes(wslib.loadWsChunk(id, chunk));
+				});
+				request.on('end', function() {
+					ws_connection.sendUTF(JSON.stringify({
+						id:id,
+						end:true
+					}, true));
+				});
+			}
+			
 		}
 	}
 }
