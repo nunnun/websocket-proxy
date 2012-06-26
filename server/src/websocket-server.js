@@ -1,6 +1,7 @@
 var WebSocketServer = require('websocket').server;
 var http = require('http');
 var url = require('url');
+var fs = require('fs');
 var wslib = require('../../libs/websocket-proxy-lib');
 
 var maxConnectionsPerHost = 8;
@@ -8,12 +9,27 @@ var maxConnectionsPerHost = 8;
 var server = http.createServer(function(request, response) {
 	console.log((new Date()) + ' Received request for ' + request.url + '\n'
 			+ JSON.stringify(request.headers, true, 2));
-	response.writeHead(200, {
-		'Content-Type' : 'text/plain'
-	});
-	response.write('request successfully proxied!' + '\n'
-			+ JSON.stringify(request.headers, true, 2));
-	response.end();
+	if (request.url == "/proxy.pac") {
+		fs.readFile('server/src/proxy.pac', 'utf8', function(err, data) {
+			if (err) {
+				response.writeHead(404);
+				response.end(err.toString());
+			} else {
+				response.writeHead(200, {
+					'Content-Type' : 'application/javascript'
+				});
+				response.end(data);
+			}
+		});
+	} else {
+
+		response.writeHead(200, {
+			'Content-Type' : 'text/plain'
+		});
+		response.write('request successfully proxied!' + '\n'
+				+ JSON.stringify(request.headers, true, 2));
+		response.end();
+	}
 });
 
 wsServer = new WebSocketServer({
@@ -43,7 +59,7 @@ wsServer.on('request', function(request) {
 				+ ' rejected.');
 		return;
 	}
-
+	
 	var connection = request.accept('proxy', request.origin);
 	handleConnection(connection);
 
