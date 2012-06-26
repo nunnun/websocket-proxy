@@ -81,9 +81,7 @@ function startProxy() {
 	} else {
 		console.log("Connection to " + proxy_server.host + ":"+proxy_server.port);
 		for ( var i in listen_ports) {
-			http.createServer(function(request, response) {
-				sendRequest(request, response, listen_ports[i]);
-			}).listen(listen_ports[i]);
+			_setupHttpServer(http,listen_ports[i]);
 		}
 		console.log('Proxy started listening on following ports:'
 				+ listen_ports.join());
@@ -91,6 +89,12 @@ function startProxy() {
 }
 
 startProxy();
+
+function _setupHttpServer(http,port){
+	http.createServer(function(request, response) {
+		sendRequest(request, response, port);
+	}).listen(port);
+}
 
 function sendRequest(request, response, port) {
 	if (ws_connection != undefined) {
