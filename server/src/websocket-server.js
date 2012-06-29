@@ -170,7 +170,7 @@ function handleConnection(connection) {
 		if (wsRequest.method === 'POST'){
 			setTimeout(function() {
 				delete clientRequests[wsRequest.id];
-			}, 10);
+			}, 10000);
 		}
 		done();
 	};
