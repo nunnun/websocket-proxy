@@ -147,19 +147,28 @@ function handleConnection(connection) {
 				headers : response.headers,
 				end : false
 			};
-			connection.sendUTF(JSON.stringify(wsResponse, true));
-
+			connection.sendUTF(JSON.stringify(wsResponse, true),function(err){
+				if (err) console.error("send()header error: " + err);
+			});
+			var seq = 0;
 			response.on('data',
 					function(chunk) {
-						connection.sendBytes(wslib.loadWsChunk(wsRequest.id,
-								chunk));
+					seq++;
+					console.log(wsResponse.id);
+					connection.sendBytes(wslib.loadWsChunk(wsResponse.id,
+								chunk,1,seq),function(err){
+							if (err){
+								console.error("send()data error: " + err);
+							}
+						});
+						
 					});
 			response.on('end', function() {
-				var wsResponse = {
-					id : wsRequest.id,
-					end : true,
-				};
-				connection.sendUTF(JSON.stringify(wsResponse, true));
+				seq++;
+				console.log(wsResponse.id);
+				connection.sendBytes(wslib.loadWsChunk(wsResponse.id,'',8,seq),function(err){
+					if (err) console.error("send()end error: " + err);
+				});
 			});
 		});
 
@@ -171,6 +180,8 @@ function handleConnection(connection) {
 			setTimeout(function() {
 				delete clientRequests[wsRequest.id];
 			}, 10000);
+		}else{
+			delete clientRequests[wsRequest.id];
 		}
 		done();
 	};
@@ -184,35 +195,35 @@ function handleConnection(connection) {
 	connection.on('message', function(message) {
 		if (message.type === 'utf8') {
 			var wsRequest = JSON.parse(message.utf8Data);
-			if (wsRequest.end === true) {
-				var req = clientRequests[wsRequest.id];
-				client_limit(req.hostname, proxyConnection, req.wsRequest,
-						connection);
+
+			// ヘッダー調整
+			if ('proxy-connection' in wsRequest.headers) {
+				wsRequest.headers['Connection'] = wsRequest.headers['proxy-connection'];
+				//wsRequest.headers['Connection'] = 'close';
+				delete wsRequest.headers['proxy-connection'];
+			}
+			if ('cache-control' in wsRequest.headers) {
+				delete wsRequest.headers['cache-control'];
+			}
+			var targetUri = parseUri(wsRequest.url);
+			if (wsRequest.method != 'POST') {
+				client_limit(targetUri.hostname, proxyConnection,
+						wsRequest, connection);
 			} else {
-				// ヘッダー調整
-				if ('proxy-connection' in wsRequest.headers) {
-					//wsRequest.headers['Connection'] = wsRequest.headers['proxy-connection'];
-					wsRequest.headers['Connection'] = 'close';
-					delete wsRequest.headers['proxy-connection'];
-				}
-				if ('cache-control' in wsRequest.headers) {
-					delete wsRequest.headers['cache-control'];
-				}
-				var targetUri = parseUri(wsRequest.url);
-				if (wsRequest.method != 'POST') {
-					client_limit(targetUri.hostname, proxyConnection,
-							wsRequest, connection);
-				} else {
-					clientRequests[wsRequest.id] = {
-						hostname : targetUri.hostname,
-						wsRequest : wsRequest
-					};
-				}
+				clientRequests[wsRequest.id] = {
+					hostname : targetUri.hostname,
+					wsRequest : wsRequest
+				};
 			}
 			
 		} else if (message.type === 'binary') {
 			var chunk = wslib.unloadWsChunk(message.binaryData);
+			if(chunk.opcode == 1){
 			clientRequests[chunk.id].wsRequest.data += chunk.payload;
+			}else if(chunk.opcode ==8){
+				var req = clientRequests[chunk.id];
+				client_limit(req.hostname, proxyConnection, req.wsRequest,connection);
+			}
 		}
 	});
 

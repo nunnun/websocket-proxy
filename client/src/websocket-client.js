@@ -1,5 +1,7 @@
-var http = require('http'), WebSocketClient = require('websocket').client, uuid = require('node-uuid'),opts = require('opts');
+var http = require('http'), WebSocketClient = require('websocket').client,opts = require('opts');
 var wslib = require('../../libs/websocket-proxy-lib');
+
+// TODO 受信時にContent-Lengthを確認して送受信を終了させる
 
 opts.parse([{
 	'short':'h',
@@ -22,6 +24,7 @@ var proxy_server = {
 };
 
 var responseArray = {};
+var seq = 0;
 
 var client = new WebSocketClient();
 client.on('connectFailed', function(error) {
@@ -30,6 +33,16 @@ client.on('connectFailed', function(error) {
 });
 
 var ws_connection;
+
+function getRequestNumber(){
+	if (seq == 0xffff){
+		seq = 1;
+	}else{
+		seq++;
+	}
+	return seq;
+}
+
 
 client.on('connect', function(connection) {
 	ws_connection = connection;
@@ -51,19 +64,21 @@ client.on('connect', function(connection) {
 		if (message.type === 'utf8') {
 			var wsResponse = JSON.parse(message.utf8Data);
 			var httpResponse = responseArray[wsResponse.id];
-			if (wsResponse.end == false) {
 				httpResponse.writeHead(wsResponse.statusCode,
 						wsResponse.headers);
-			} else {
-				httpResponse.end();
-				setTimeout(function() {
-					delete responseArray[wsResponse.id];
-				}, 10);
-			}
 		} else if (message.type === 'binary') {
-			var chunk = wslib.unloadWsChunk(message.binaryData);
-			var res = responseArray[chunk.id];
-			res.write(chunk.payload);
+			var wschunk = wslib.unloadWsChunk(message.binaryData);
+			if(wschunk.id in responseArray){
+				var res = responseArray[wschunk.id];
+				if(wschunk.opcode == 1){
+					res.write(wschunk.payload);
+				}else if(wschunk.opcode == 8){
+					res.end();
+					delete responseArray[wschunk.id];
+				}
+			}else{
+				console.log('Error: Response is destroyed even before last payload has arrived.' + wschunk.id+ ":" + wschunk.opcode);
+			}
 		}
 	});
 });
@@ -99,14 +114,13 @@ function _setupHttpServer(http,port){
 function sendRequest(request, response, port) {
 	if (ws_connection != undefined) {
 		if (ws_connection.connected) {
-			var id = uuid.v4();
+			var id = getRequestNumber();
 			responseArray[id] = response;
 			var wsRequest = {
 					id : id,
 					method : request.method,
 					url : request.url,
 					headers : request.headers,
-					end:false,
 					data:''
 				};
 			ws_connection.sendUTF(JSON.stringify(wsRequest, true));
@@ -114,16 +128,31 @@ function sendRequest(request, response, port) {
 			// Send a payload only if the request method is POST
 			if(request.method === 'POST'){
 				request.on('data', function(chunk) {
-					ws_connection.sendBytes(wslib.loadWsChunk(id, chunk));
+					ws_connection.sendBytes(wslib.loadWsChunk(id, chunk,1));
 				});
 				request.on('end', function() {
-					ws_connection.sendUTF(JSON.stringify({
-						id:id,
-						end:true
-					}, true));
+					ws_connection.sendBytes(wslib.loadWsChunk(id, '',8));
 				});
 			}
-			
+			// Request should be timed out after 120sec.
+			__shutdownHttpRequest(id,response);
+//			});
 		}
 	}
+}
+
+function __shutdownHttpRequest(id, response) {
+	setTimeout(function(id, response) {
+		if (response != undefined) {
+			response.writeHead('500', {
+				'Content-Type' : 'text/plain'
+			});
+//			response.write("Error: No response from proxy server");
+			response.end();
+			// responseArray should be initialized as well
+			setTimeout(function(id) {
+				delete responseArray[id];
+			}, 100000,id);
+		}
+	}, 100000,id,response);
 }
