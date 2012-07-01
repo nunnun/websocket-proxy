@@ -5,6 +5,7 @@ var fs = require('fs');
 var wslib = require('../../libs/websocket-proxy-lib');
 
 var maxConnectionsPerHost = 8;
+var anonymousProxy = false;
 
 var server = http.createServer(function(request, response) {
 	console.log((new Date()) + ' Received request for ' + request.url + '\n'
@@ -147,6 +148,7 @@ function handleConnection(connection) {
 				headers : response.headers,
 				end : false
 			};
+			console.log(connection.remoteAddress + " - - [" + (new Date()) + '] ' + 'Req:' + wsRequest.id + ", URL:" + wsRequest.url);
 			connection.sendUTF(JSON.stringify(wsResponse, true),function(err){
 				if (err) console.error("send()header error: " + err);
 			});
@@ -154,7 +156,6 @@ function handleConnection(connection) {
 			response.on('data',
 					function(chunk) {
 					seq++;
-					console.log(wsResponse.id);
 					connection.sendBytes(wslib.loadWsChunk(wsResponse.id,
 								chunk,1,seq),function(err){
 							if (err){
@@ -165,7 +166,6 @@ function handleConnection(connection) {
 					});
 			response.on('end', function() {
 				seq++;
-				console.log(wsResponse.id);
 				connection.sendBytes(wslib.loadWsChunk(wsResponse.id,'',8,seq),function(err){
 					if (err) console.error("send()end error: " + err);
 				});
@@ -204,6 +204,12 @@ function handleConnection(connection) {
 			}
 			if ('cache-control' in wsRequest.headers) {
 				delete wsRequest.headers['cache-control'];
+			}
+			// via header
+			if(anonymousProxy == false){
+				wsRequest.headers['via'] = connection.remoteAddress;
+				wsRequest.headers['HTTP_CLIENT_IP'] = connection.remoteAddress;
+				wsRequest.headers['HTTP_X_FORWARDED_FOR'] = connection.remoteAddress;
 			}
 			var targetUri = parseUri(wsRequest.url);
 			if (wsRequest.method != 'POST') {

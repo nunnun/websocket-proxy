@@ -2,6 +2,8 @@ var http = require('http'), WebSocketClient = require('websocket').client,opts =
 var wslib = require('../../libs/websocket-proxy-lib');
 
 // TODO 受信時にContent-Lengthを確認して送受信を終了させる
+// TODO 8008番で待ち受けてproxy.pacを配布する
+// TODO HTTPS対応
 
 opts.parse([{
 	'short':'h',

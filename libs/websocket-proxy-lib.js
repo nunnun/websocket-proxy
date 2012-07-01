@@ -2,7 +2,7 @@ exports.loadWsChunk = function(id, chunk,opcode,seq) {
 	var offset = 4;
 	opcode = opcode || 0; //0: Continuation Frame, 1:data transfer, 8:close
 	var version = 1; // 1~15
-	var header = '' + parseInt(version,10).toString(16) + parseInt(opcode,10).toString(16);
+	var header = (parseInt(version,10) << 4) + parseInt(opcode,10);
 	var buf = new Buffer(chunk.length + offset);
 	buf[0] = parseInt(header.toString(10));
 	
@@ -19,9 +19,9 @@ exports.loadWsChunk = function(id, chunk,opcode,seq) {
 
 exports.unloadWsChunk = function(chunk) {
 	var offset = 4;
-	var header = '' + chunk[0];
-	var version = parseInt(header[0], 10).toString(16);
-	var opcode = parseInt(header[1], 10).toString(16);
+	var header = parseInt(chunk[0],10);
+	var version = header >> 4;
+	var opcode = header & 0xf;
 	var id = (parseInt(chunk[1],10) << 8) + parseInt(chunk[2],10);
 	
 	return {
