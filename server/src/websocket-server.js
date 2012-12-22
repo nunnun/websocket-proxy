@@ -2,6 +2,7 @@ var WebSocketServer = require('websocket').server;
 var http = require('http');
 var url = require('url');
 var fs = require('fs');
+var net = require('net');
 var wslib = require('../../libs/websocket-proxy-lib');
 
 var maxConnectionsPerHost = 8;
@@ -125,65 +126,122 @@ function handleConnection(connection) {
 	};
 	
 	function proxyConnection(wsRequest, connection, done) {
-
-		var targetUrl = parseUri(wsRequest.url);
-
-		var client = http.createClient(targetUrl.port,
-				targetUrl.hostname);
-		client.on('error', function(err) {
-			console.log("http-client-error:");
-			console.log(err);
-		});
-		var httpRequest = client.request(wsRequest.method,
-				targetUrl.reqPath, wsRequest.headers);
-		httpRequest.on('error', function(err) {
-			console.log("httperror:");
-			console.log(err);
-		});
-		httpRequest.on('response', function(response) {
-			// Headerのみ先に返す
-			var wsResponse = {
-				id : wsRequest.id,
-				statusCode : response.statusCode,
-				headers : response.headers,
-				end : false
+		if(wsRequest.method != "CONNECT"){
+			var targetUrl = parseUri(wsRequest.url);
+			var options = {
+				hostname: targetUrl.hostname,
+				port: targetUrl.port,
+				path: targetUrl.reqPath,
+				method: wsRequest.method,
+				header: wsRequest.headers
 			};
-			console.log(connection.remoteAddress + " - - [" + (new Date()) + '] ' + 'Req:' + wsRequest.id + ", URL:" + wsRequest.url);
-			connection.sendUTF(JSON.stringify(wsResponse, true),function(err){
-				if (err) console.error("send()header error: " + err);
+			var httpRequest = http.request(options,function(response) {
+				// Headerのみ先に返す
+				var wsResponse = {
+					id : wsRequest.id,
+					statusCode : response.statusCode,
+					headers : response.headers,
+					method: wsRequest.method,
+					end : false
+				};
+				console.log(connection.remoteAddress + " - - [" + (new Date()) + '] ' + 'Req:' + wsRequest.id + ", URL:" + wsRequest.url);
+				connection.sendUTF(JSON.stringify(wsResponse, true),function(err){
+					if (err) console.error("send()header error: " + err);
+				});
+				var seq = 0;
+				response.on('data',
+						function(chunk) {
+						seq++;
+						connection.sendBytes(wslib.loadWsChunk(wsResponse.id,
+									chunk,1,seq),function(err){
+								if (err){
+									console.error("send()data error: " + err);
+								}
+							});
+							
+						});
+				response.on('end', function() {
+					seq++;
+					connection.sendBytes(wslib.loadWsChunk(wsResponse.id,'',8,seq),function(err){
+						if (err) console.error("send()end error: " + err);
+					});
+				});
 			});
-			var seq = 0;
-			response.on('data',
-					function(chunk) {
+	
+			httpRequest.on('error', function(err) {
+				console.log("http-client-error:");
+				console.log(err);
+			});
+	
+			if (wsRequest.data != "") {
+				httpRequest.write(wsRequest.data);
+			}
+			httpRequest.end();
+			if (wsRequest.method === 'POST'){
+				setTimeout(function() {
+					delete clientRequests[wsRequest.id];
+				}, 10000);
+			}else{
+				delete clientRequests[wsRequest.id];
+			}
+			done();
+		}else{
+			var targetUrl = parseUri(wsRequest.url);
+			var srvSocket = net.connect(targetUrl.port, targetUrl.hostname, function() {
+				var seq = 1;
+				var wsResponse = {
+						id : wsRequest.id,
+						statusCode : 200,
+						headers : "",
+						method: wsRequest.method,
+						end : false
+					};
+				console.log(connection.remoteAddress + " - - [" + (new Date()) + '] ' + 'Req:' + wsRequest.id + ", URL:" + wsRequest.url);
+				srvSocket.on('data',function(chunk){
 					seq++;
 					connection.sendBytes(wslib.loadWsChunk(wsResponse.id,
-								chunk,1,seq),function(err){
+								chunk,2,seq),function(err){
 							if (err){
 								console.error("send()data error: " + err);
 							}
 						});
-						
-					});
-			response.on('end', function() {
-				seq++;
-				connection.sendBytes(wslib.loadWsChunk(wsResponse.id,'',8,seq),function(err){
-					if (err) console.error("send()end error: " + err);
 				});
+			
+				srvSocket.on('end',function(chunk){
+					seq++;
+					console.log('Server socket on end, id:' + wsResponse.id+ ", seq:" + seq);
+					connection.sendBytes(wslib.loadWsChunk(wsResponse.id,'',9,seq),function(err){
+						if (err) console.error("send()end error: " + err);
+					});
+					delete clientRequests[wsResponse.id];
+				});
+				srvSocket.on('error',function(e){
+					console.log(e);
+					console.log("Server socket on error, id:" + wsResponse.id+ ", seq:" + seq);
+					connection.sendBytes(wslib.loadWsChunk(wsResponse.id,'',9,seq),function(err){
+						if (err) console.error("send()end error: " + err);
+					});
+					delete clientRequests[chunk.id];
+				});
+				srvSocket.on('timeout',function(){
+					cconsole.log("Server socket on timeout, id:" + wsResponse.id+ ", seq:" + seq);
+					connection.sendBytes(wslib.loadWsChunk(wsResponse.id,'',9,seq),function(err){
+						if (err) console.error("send()end error: " + err);
+					});
+					delete clientRequests[chunk.id];
+				});
+				srvSocket.write(wsRequest.data);
+				try{
+					clientRequests[wsRequest.id].srvSocket = srvSocket;
+					connection.sendUTF(JSON.stringify(wsResponse, true),function(err){
+						if (err) console.error("send()header error: " + err);
+					});
+				}catch(e){
+					console.log(e);
+				}		
 			});
-		});
-
-		if (wsRequest.data != "") {
-			httpRequest.write(wsRequest.data);
+			done();
 		}
-		httpRequest.end();
-		if (wsRequest.method === 'POST'){
-			setTimeout(function() {
-				delete clientRequests[wsRequest.id];
-			}, 10000);
-		}else{
-			delete clientRequests[wsRequest.id];
-		}
-		done();
 	};
 
 	console.log((new Date()) + ' Connection accepted.');
@@ -195,30 +253,39 @@ function handleConnection(connection) {
 	connection.on('message', function(message) {
 		if (message.type === 'utf8') {
 			var wsRequest = JSON.parse(message.utf8Data);
-
-			// ヘッダー調整
-			if ('proxy-connection' in wsRequest.headers) {
-				wsRequest.headers['Connection'] = wsRequest.headers['proxy-connection'];
-				//wsRequest.headers['Connection'] = 'close';
-				delete wsRequest.headers['proxy-connection'];
-			}
-			if ('cache-control' in wsRequest.headers) {
-				delete wsRequest.headers['cache-control'];
-			}
-			// via header
-			if(anonymousProxy == false){
-				wsRequest.headers['via'] = connection.remoteAddress;
-				wsRequest.headers['HTTP_CLIENT_IP'] = connection.remoteAddress;
-				wsRequest.headers['HTTP_X_FORWARDED_FOR'] = connection.remoteAddress;
-			}
-			var targetUri = parseUri(wsRequest.url);
-			if (wsRequest.method != 'POST') {
-				client_limit(targetUri.hostname, proxyConnection,
-						wsRequest, connection);
-			} else {
+			if (wsRequest.method != 'CONNECT'){
+				// ヘッダー調整
+				if ('proxy-connection' in wsRequest.headers) {
+					wsRequest.headers['Connection'] = wsRequest.headers['proxy-connection'];
+					//wsRequest.headers['Connection'] = 'close';
+					delete wsRequest.headers['proxy-connection'];
+				}
+				if ('cache-control' in wsRequest.headers) {
+					delete wsRequest.headers['cache-control'];
+				}
+				// via header
+				if(anonymousProxy == false){
+					wsRequest.headers['via'] = connection.remoteAddress;
+					wsRequest.headers['HTTP_CLIENT_IP'] = connection.remoteAddress;
+					wsRequest.headers['HTTP_X_FORWARDED_FOR'] = connection.remoteAddress;
+				}
+				var targetUri = parseUri(wsRequest.url);
+				if (wsRequest.method != 'POST') {
+					client_limit(targetUri.hostname, proxyConnection,
+							wsRequest, connection);
+				} else {
+					clientRequests[wsRequest.id] = {
+						hostname : targetUri.hostname,
+						wsRequest : wsRequest
+					};
+				}
+			}else{
+				wsRequest.url = "https://" + wsRequest.url;
+				var targetUri = parseUri(wsRequest.url);
 				clientRequests[wsRequest.id] = {
-					hostname : targetUri.hostname,
-					wsRequest : wsRequest
+						hostname : targetUri.hostname,
+						wsRequest : wsRequest,
+						srvSocket: {}
 				};
 			}
 			
@@ -229,6 +296,26 @@ function handleConnection(connection) {
 			}else if(chunk.opcode ==8){
 				var req = clientRequests[chunk.id];
 				client_limit(req.hostname, proxyConnection, req.wsRequest,connection);
+			}else if(chunk.opcode == 2){
+				try{
+					var req = clientRequests[chunk.id];
+					req.srvSocket.write(chunk.payload);
+				}catch(e){
+					console.log("----")
+					console.log(e);
+					console.log("Server ws receive error, id:"+ chunk.id + ", seq:" + chunk.seq + ", opcode:2\r\n----");
+				}
+			}else if(chunk.opcode == 9){
+				var req = clientRequests[chunk.id];
+				try{
+					req.srvSocket.end();
+				}catch(e){
+					console.log("----")
+					console.log(e);
+					console.log("Server ws receive error, id:"+ chunk.id + ", seq:" + chunk.seq + ", opcode:9\r\n----");
+				}finally{
+					delete clientRequests[chunk.id];
+				}
 			}
 		}
 	});

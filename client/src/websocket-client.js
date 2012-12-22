@@ -1,4 +1,4 @@
-var http = require('http'), WebSocketClient = require('websocket').client,opts = require('opts');
+var http = require('http'), https = require('https'), WebSocketClient = require('websocket').client,opts = require('opts'), url = require('url'), net = require('net');
 var wslib = require('../../libs/websocket-proxy-lib');
 
 // TODO 受信時にContent-Lengthを確認して送受信を終了させる
@@ -65,9 +65,16 @@ client.on('connect', function(connection) {
 	ws_connection.on('message', function(message) {
 		if (message.type === 'utf8') {
 			var wsResponse = JSON.parse(message.utf8Data);
-			var httpResponse = responseArray[wsResponse.id];
-				httpResponse.writeHead(wsResponse.statusCode,
-						wsResponse.headers);
+			if (wsResponse.method != 'CONNECT'){
+				var httpResponse = responseArray[wsResponse.id];
+					httpResponse.writeHead(wsResponse.statusCode,
+							wsResponse.headers);
+			}else{
+				var cltSocket = responseArray[wsResponse.id];
+				cltSocket.write('HTTP/1.1 200 Connection Established\r\n' +
+	                    'Proxy-agent: Node-Proxy\r\n' +
+	            '\r\n');
+			}
 		} else if (message.type === 'binary') {
 			var wschunk = wslib.unloadWsChunk(message.binaryData);
 			if(wschunk.id in responseArray){
@@ -76,6 +83,17 @@ client.on('connect', function(connection) {
 					res.write(wschunk.payload);
 				}else if(wschunk.opcode == 8){
 					res.end();
+					delete responseArray[wschunk.id];
+				}else if(wschunk.opcode == 2){
+					var res = responseArray[wschunk.id];
+					res.write(wschunk.payload);
+				}else if(wschunk.opcode == 9){
+					var res = responseArray[wschunk.id];
+					try{
+						res.end();
+					}catch(e){
+						console.log(e);
+					}
 					delete responseArray[wschunk.id];
 				}
 			}else{
@@ -108,10 +126,52 @@ function startProxy() {
 startProxy();
 
 function _setupHttpServer(http,port){
-	http.createServer(function(request, response) {
+	var httpserver = http.createServer(function(request, response) {
 		sendRequest(request, response, port);
-	}).listen(port);
-}
+	});
+	httpserver.on('connect',function(req, cltSocket, head){
+		sendTLSRequest(req, cltSocket, head, port);
+	});
+	httpserver.listen(port);
+};
+
+function sendTLSRequest(req, cltSocket, head, port){
+	if (ws_connection != undefined) {
+		if (ws_connection.connected) {
+			var id = getRequestNumber();
+			var seq = 1;
+			responseArray[id] = cltSocket;
+			var wsRequest = {
+					id : id,
+					method : req.method,
+					url : req.url,
+					headers : req.headers,
+					data:''
+				};
+			ws_connection.sendUTF(JSON.stringify(wsRequest, true));
+			cltSocket.on('data',function(chunk){
+				seq++;
+				ws_connection.sendBytes(wslib.loadWsChunk(id, chunk,2,seq));
+			});
+			cltSocket.on('end',function(){
+				console.log('client on end!');
+				seq++;
+				ws_connection.sendBytes(wslib.loadWsChunk(id, '',9,seq));
+			});
+			console.log('Port:'+port+", URL:"+req.url);
+			if(0 == head.length){
+				seq++;
+				ws_connection.sendBytes(wslib.loadWsChunk(id, '',8,seq));
+			}else{
+				seq++;
+				ws_connection.sendBytes(wslib.loadWsChunk(id, head,2,seq));
+				seq++;
+				ws_connection.sendBytes(wslib.loadWsChunk(id, '',8,seq));
+			}
+
+		};
+	};
+};
 
 function sendRequest(request, response, port) {
 	if (ws_connection != undefined) {
@@ -129,11 +189,14 @@ function sendRequest(request, response, port) {
 			console.log('Port:'+port+", URL:"+request.url);
 			// Send a payload only if the request method is POST
 			if(request.method === 'POST'){
+				var seq = 1;
 				request.on('data', function(chunk) {
-					ws_connection.sendBytes(wslib.loadWsChunk(id, chunk,1));
+					seq++;
+					ws_connection.sendBytes(wslib.loadWsChunk(id, chunk,1,seq));
 				});
 				request.on('end', function() {
-					ws_connection.sendBytes(wslib.loadWsChunk(id, '',8));
+					seq++;
+					ws_connection.sendBytes(wslib.loadWsChunk(id, '',8,seq));
 				});
 			}
 			// Request should be timed out after 120sec.

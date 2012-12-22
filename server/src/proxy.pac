@@ -13,7 +13,9 @@ function FindProxyForURL(url,host) {
 							
 	if (url.substring(0, 5) == "http:") {
 		return "PROXY " + proxys[Math.floor(Math.random() * proxys.length)];
-	}else{
+	}else if(url.substring(0, 6) == "https:"){
+		return "PROXY " + proxys[Math.floor(Math.random() * proxys.length)];	
+    }else{
     	return "DIRECT";
     }
 }
