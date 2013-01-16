@@ -128,6 +128,14 @@ function handleConnection(connection) {
 	function proxyConnection(wsRequest, connection, done) {
 		if(wsRequest.method != "CONNECT"){
 			var targetUrl = parseUri(wsRequest.url);
+
+			//Content-Lengthを付与
+			if(!('content-length') in wsRequest.headers){
+				wsRequest.headers['Content-length'] = req.wsRequest.data.length;
+			}
+			// transfer-encodingを削除
+			delete wsRequest.headers['transfer-encoding'];
+			
 			var options = {
 				hostname: targetUrl.hostname,
 				port: targetUrl.port,
@@ -135,6 +143,7 @@ function handleConnection(connection) {
 				method: wsRequest.method,
 				header: wsRequest.headers
 			};
+
 			var httpRequest = http.request(options,function(response) {
 				// Headerのみ先に返す
 				var wsResponse = {
@@ -292,7 +301,7 @@ function handleConnection(connection) {
 		} else if (message.type === 'binary') {
 			var chunk = wslib.unloadWsChunk(message.binaryData);
 			if(chunk.opcode == 1){
-			clientRequests[chunk.id].wsRequest.data += chunk.payload;
+				clientRequests[chunk.id].wsRequest.data += chunk.payload;
 			}else if(chunk.opcode ==8){
 				var req = clientRequests[chunk.id];
 				client_limit(req.hostname, proxyConnection, req.wsRequest,connection);

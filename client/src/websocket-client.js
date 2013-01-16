@@ -53,7 +53,7 @@ client.on('connect', function(connection) {
 		console.log("Connection Error: " + error.toString());
 	});
 	ws_connection.on('close', function() {
-		console.log('echo-protocol Connection Closed');
+		console.log('Proxy Connection Closed');
 		var reconnect = function(){
 			if (ws_connection.state == 'closed') {
 				connectToProxy();
