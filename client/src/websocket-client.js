@@ -66,11 +66,11 @@ client.on('connect', function(connection) {
 		if (message.type === 'utf8') {
 			var wsResponse = JSON.parse(message.utf8Data);
 			if (wsResponse.method != 'CONNECT'){
-				var httpResponse = responseArray[wsResponse.id];
+				var httpResponse = responseArray[wsResponse.id].res;
 					httpResponse.writeHead(wsResponse.statusCode,
 							wsResponse.headers);
 			}else{
-				var cltSocket = responseArray[wsResponse.id];
+				var cltSocket = responseArray[wsResponse.id].res;
 				cltSocket.write('HTTP/1.1 200 Connection Established\r\n' +
 	                    'Proxy-agent: Node-Proxy\r\n' +
 	            '\r\n');
@@ -78,23 +78,28 @@ client.on('connect', function(connection) {
 		} else if (message.type === 'binary') {
 			var wschunk = wslib.unloadWsChunk(message.binaryData);
 			if(wschunk.id in responseArray){
-				var res = responseArray[wschunk.id];
+				var res = responseArray[wschunk.id].res;
 				if(wschunk.opcode == 1){
 					res.write(wschunk.payload);
 				}else if(wschunk.opcode == 8){
 					res.end();
 					delete responseArray[wschunk.id];
 				}else if(wschunk.opcode == 2){
-					var res = responseArray[wschunk.id];
+					var res = responseArray[wschunk.id].res;
 					res.write(wschunk.payload);
 				}else if(wschunk.opcode == 9){
-					var res = responseArray[wschunk.id];
+					var res = responseArray[wschunk.id].res;
 					try{
-						res.end();
+						if(responseArray[wschunk.id].active){
+							responseArray[wschunk.id].active = false;
+							res.end();
+						}
 					}catch(e){
 						console.log(e);
 					}
-					delete responseArray[wschunk.id];
+					setTimeout(function(id){
+						delete responseArray[id];
+					},10000,wschunk.id);
 				}
 			}else{
 				console.log('Error: Response is destroyed even before last payload has arrived.' + wschunk.id+ ":" + wschunk.opcode);
@@ -140,7 +145,10 @@ function sendTLSRequest(req, cltSocket, head, port){
 		if (ws_connection.connected) {
 			var id = getRequestNumber();
 			var seq = 1;
-			responseArray[id] = cltSocket;
+			responseArray[id] = {
+				res:cltSocket,
+				active:true
+			};
 			var wsRequest = {
 					id : id,
 					method : req.method,
@@ -151,12 +159,18 @@ function sendTLSRequest(req, cltSocket, head, port){
 			ws_connection.sendUTF(JSON.stringify(wsRequest, true));
 			cltSocket.on('data',function(chunk){
 				seq++;
-				ws_connection.sendBytes(wslib.loadWsChunk(id, chunk,2,seq));
+				ws_connection.sendBytes(wslib.loadWsChunk(id, chunk, 2, seq));
 			});
 			cltSocket.on('end',function(){
-				console.log('client on end!');
-				seq++;
-				ws_connection.sendBytes(wslib.loadWsChunk(id, '',9,seq));
+				try{
+					if(responseArray[id].active === true){
+						console.log("TLS Connection closed from client side");
+						seq++;
+						ws_connection.sendBytes(wslib.loadWsChunk(id, '', 9, seq));
+					}
+				}catch(e){
+					console.log(e);
+				}
 			});
 			console.log('Port:'+port+", URL:"+req.url);
 			if(0 == head.length){
@@ -177,7 +191,9 @@ function sendRequest(request, response, port) {
 	if (ws_connection != undefined) {
 		if (ws_connection.connected) {
 			var id = getRequestNumber();
-			responseArray[id] = response;
+			responseArray[id] = {
+				res:response
+			};
 			var wsRequest = {
 					id : id,
 					method : request.method,

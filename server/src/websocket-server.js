@@ -187,9 +187,9 @@ function handleConnection(connection) {
 			}
 			httpRequest.end();
 			if (wsRequest.method === 'POST'){
-				setTimeout(function() {
-					delete clientRequests[wsRequest.id];
-				}, 10000);
+				setTimeout(function(id) {
+					delete clientRequests[id];
+				}, 10000,wsRequest.id);
 			}else{
 				delete clientRequests[wsRequest.id];
 			}
@@ -216,13 +216,22 @@ function handleConnection(connection) {
 						});
 				});
 			
-				srvSocket.on('end',function(chunk){
+				srvSocket.on('end',function(){
 					seq++;
 					console.log('Server socket on end, id:' + wsResponse.id+ ", seq:" + seq);
 					connection.sendBytes(wslib.loadWsChunk(wsResponse.id,'',9,seq),function(err){
 						if (err) console.error("send()end error: " + err);
 					});
-					delete clientRequests[wsResponse.id];
+					try{
+						if(wsResponce.id in clientRequests){
+							clientRequests[wsResponse.id].active = false;
+							setTimeout(function(id){
+								delete clientRequests[id];
+							},10000,wsResponse.id);
+						}
+					}catch(e){
+						console.log(e);
+					}
 				});
 				srvSocket.on('error',function(e){
 					console.log(e);
@@ -230,18 +239,25 @@ function handleConnection(connection) {
 					connection.sendBytes(wslib.loadWsChunk(wsResponse.id,'',9,seq),function(err){
 						if (err) console.error("send()end error: " + err);
 					});
-					delete clientRequests[chunk.id];
+					clientRequests[wsResponse.id].active = false;	
+					setTimeout(function(id){
+						delete clientRequests[id];
+					},10000,wsResponse.id);
 				});
 				srvSocket.on('timeout',function(){
 					cconsole.log("Server socket on timeout, id:" + wsResponse.id+ ", seq:" + seq);
 					connection.sendBytes(wslib.loadWsChunk(wsResponse.id,'',9,seq),function(err){
 						if (err) console.error("send()end error: " + err);
 					});
-					delete clientRequests[chunk.id];
+					clientRequests[wsResponse.id].active = false;
+					setTimeout(function(id){
+						delete clientRequests[id];
+					},10000,wsResponse.id);
 				});
 				srvSocket.write(wsRequest.data);
 				try{
 					clientRequests[wsRequest.id].srvSocket = srvSocket;
+					clientRequests[wsRequest.id].active = true;
 					connection.sendUTF(JSON.stringify(wsResponse, true),function(err){
 						if (err) console.error("send()header error: " + err);
 					});
@@ -294,7 +310,8 @@ function handleConnection(connection) {
 				clientRequests[wsRequest.id] = {
 						hostname : targetUri.hostname,
 						wsRequest : wsRequest,
-						srvSocket: {}
+						srvSocket: {},
+						active: false
 				};
 			}
 			
@@ -317,13 +334,17 @@ function handleConnection(connection) {
 			}else if(chunk.opcode == 9){
 				var req = clientRequests[chunk.id];
 				try{
-					req.srvSocket.end();
+					if(req.active){
+						req.srvSocket.end();
+					}
 				}catch(e){
 					console.log("----")
 					console.log(e);
 					console.log("Server ws receive error, id:"+ chunk.id + ", seq:" + chunk.seq + ", opcode:9\r\n----");
 				}finally{
-					delete clientRequests[chunk.id];
+					setTimeout(function(id){
+						delete clientRequests[id];
+					},10000,chunk.id);
 				}
 			}
 		}
